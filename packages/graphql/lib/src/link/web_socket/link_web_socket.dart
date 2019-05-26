@@ -5,6 +5,7 @@ import 'package:graphql/src/socket_client.dart';
 import 'package:graphql/src/utilities/helpers.dart';
 import 'package:graphql/src/websocket/messages.dart';
 import 'package:meta/meta.dart';
+import 'package:rxdart/rxdart.dart';
 
 /// A websocket [Link] implementation to support the websocket transport.
 /// It supports subscriptions, query and mutation operations as well.
@@ -21,12 +22,7 @@ import 'package:meta/meta.dart';
 /// If you'd like to connect to the socket server instantly, call the [connectOrReconnect] method after creating this [WebSocketLink] instance.
 class WebSocketLink extends Link {
   /// Creates a new [WebSocketLink] instance with the specified config.
-  WebSocketLink(
-      {@required this.url,
-      this.headers,
-      this.reconnectOnHeaderChange = true,
-      this.config = const SocketClientConfig()})
-      : super() {
+  WebSocketLink({@required this.url, this.headers, this.reconnectOnHeaderChange = true, this.config = const SocketClientConfig()}) : super() {
     request = _doOperation;
   }
 
@@ -38,43 +34,39 @@ class WebSocketLink extends Link {
   // cannot be final because we're changing the instance upon a header change.
   SocketClient _socketClient;
 
+  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>();
+
   Stream<FetchResult> _doOperation(Operation operation, [NextLink forward]) {
     final Map<String, dynamic> concatHeaders = <String, dynamic>{};
     final Map<String, dynamic> context = operation.getContext();
-    if (context != null && context.containsKey('headers'))
-      concatHeaders.addAll(context['headers'] as Map<String, dynamic>);
+    if (context != null && context.containsKey('headers')) concatHeaders.addAll(context['headers'] as Map<String, dynamic>);
     if (headers != null) {
       concatHeaders.addAll(headers);
     }
 
-    if (_socketClient == null ||
-        (reconnectOnHeaderChange &&
-            areDifferentVariables(_socketClient.headers, concatHeaders))) {
-      if (_socketClient != null)
-        print(
-            'Creating a new socket client, because the headers have changed..');
+    if (_socketClient == null || (reconnectOnHeaderChange && areDifferentVariables(_socketClient.headers, concatHeaders))) {
+      if (_socketClient != null) print('Creating a new socket client, because the headers have changed..');
       connectOrReconnect(headers: concatHeaders);
     }
 
-    return _socketClient.subscribe(SubscriptionRequest(operation), true).map(
-        (SubscriptionData result) => FetchResult(
-            data: result.data,
-            errors: result.errors as List<dynamic>,
-            context: operation.getContext(),
-            extensions: operation.extensions));
+    return _socketClient.subscribe(SubscriptionRequest(operation), true).map((SubscriptionData result) =>
+        FetchResult(data: result.data, errors: result.errors as List<dynamic>, context: operation.getContext(), extensions: operation.extensions));
   }
 
   /// Connects or reconnects to the server with the specified headers.
   void connectOrReconnect({Map<String, dynamic> headers}) {
     _socketClient?.dispose();
-    _socketClient =
-        SocketClient(url, headers: headers ?? this.headers, config: config);
+    _socketClient = SocketClient(url, headers: headers ?? this.headers, config: config);
+    _connectionStateController.addStream(_socketClient.connectionState);
   }
+
+  Stream<SocketConnectionState> get connectionState => _connectionStateController.stream;
 
   /// Disposes the underlying socket client explicitly. Only use this, if you want to disconnect from
   /// the current server in favour of another one. If that's the case, create a new [WebSocketLink] instance.
   Future<void> dispose() async {
     await _socketClient?.dispose();
     _socketClient = null;
+    await _connectionStateController?.close();
   }
 }
