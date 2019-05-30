@@ -70,16 +70,10 @@ enum SocketConnectionState { NOT_CONNECTED, CONNECTING, CONNECTED }
 /// lifting of socket state management. Once you're done with the socket connection, make sure
 /// you call the [dispose] method to release all allocated resources.
 class SocketClient {
-  SocketClient(
-    this.url, {
-    this.protocols = const <String>[
-      'graphql-ws',
-    ],
-    this.headers = const <String, String>{
-      'content-type': 'application/json',
-    },
-    this.config = const SocketClientConfig(),
-  }) {
+  SocketClient(this.url,
+      {this.protocols = const <String>['graphql-ws'],
+      this.headers = const <String, String>{'content-type': 'application/json'},
+      this.config = const SocketClientConfig()}) {
     _connect();
   }
 
@@ -88,7 +82,7 @@ class SocketClient {
   final SocketClientConfig config;
   final Iterable<String> protocols;
   final Map<String, dynamic> headers;
-  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>();
+  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>(sync: true);
 
   Timer _reconnectTimer;
   WebSocket _socket;
@@ -183,10 +177,10 @@ class SocketClient {
   Future<void> dispose() async {
     print('Disposing socket client..');
     _reconnectTimer?.cancel();
-    if (_socket != null) await _socket?.close();
-    if (_keepAliveSubscription != null) await _keepAliveSubscription?.cancel();
-    if (_messageSubscription != null) await _messageSubscription?.cancel();
-    if (_connectionStateController != null) await _connectionStateController?.close();
+    if (_socket != null) await _socket.close();
+    if (_keepAliveSubscription != null) await _keepAliveSubscription.cancel();
+    if (_messageSubscription != null) await _messageSubscription.cancel();
+    if (_connectionStateController != null) await _connectionStateController.close();
   }
 
   static GraphQLSocketMessage _parseSocketMessage(dynamic message) {

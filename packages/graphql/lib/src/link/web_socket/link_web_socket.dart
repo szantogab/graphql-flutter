@@ -34,7 +34,7 @@ class WebSocketLink extends Link {
   // cannot be final because we're changing the instance upon a header change.
   SocketClient _socketClient;
 
-  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>();
+  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>(sync: true);
 
   Stream<FetchResult> _doOperation(Operation operation, [NextLink forward]) {
     final Map<String, dynamic> concatHeaders = <String, dynamic>{};
@@ -65,8 +65,11 @@ class WebSocketLink extends Link {
   /// Disposes the underlying socket client explicitly. Only use this, if you want to disconnect from
   /// the current server in favour of another one. If that's the case, create a new [WebSocketLink] instance.
   Future<void> dispose() async {
-    if (_socketClient != null) await _socketClient?.dispose();
-    _socketClient = null;
-    if (_connectionStateController != null) await _connectionStateController?.close();
+    if (_socketClient != null) {
+      await _socketClient.dispose();
+      _socketClient = null;
+    }
+
+    if (_connectionStateController != null) await _connectionStateController.close();
   }
 }
