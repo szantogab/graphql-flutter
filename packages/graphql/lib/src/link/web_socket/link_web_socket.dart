@@ -54,7 +54,7 @@ class WebSocketLink extends Link {
   }
 
   /// Connects or reconnects to the server with the specified headers.
-  void connectOrReconnect({Map<String, dynamic> headers}) {
+  void connectOrReconnect({Map<String, dynamic> headers}) async {
     if (_socketClient != null) await _socketClient?.dispose();
     _socketClient = SocketClient(url, headers: headers ?? this.headers, config: config);
     _connectionStateController.addStream(_socketClient.connectionState);
