@@ -55,7 +55,7 @@ class WebSocketLink extends Link {
 
   /// Connects or reconnects to the server with the specified headers.
   void connectOrReconnect({Map<String, dynamic> headers}) {
-    _socketClient?.dispose();
+    if (_socketClient != null) await _socketClient?.dispose();
     _socketClient = SocketClient(url, headers: headers ?? this.headers, config: config);
     _connectionStateController.addStream(_socketClient.connectionState);
   }
@@ -65,8 +65,8 @@ class WebSocketLink extends Link {
   /// Disposes the underlying socket client explicitly. Only use this, if you want to disconnect from
   /// the current server in favour of another one. If that's the case, create a new [WebSocketLink] instance.
   Future<void> dispose() async {
-    await _socketClient?.dispose();
+    if (_socketClient != null) await _socketClient?.dispose();
     _socketClient = null;
-    await _connectionStateController?.close();
+    if (_connectionStateController != null) await _connectionStateController?.close();
   }
 }
