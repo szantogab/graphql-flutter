@@ -70,6 +70,8 @@ class WebSocketLink extends Link {
       _socketClient = null;
     }
 
+    // this line is needed to make sure that the socketClient's connectionState is done after we call _connectionStateController.close().
+    await Future.delayed(Duration(milliseconds: 20));
     if (_connectionStateController != null) await _connectionStateController.close();
   }
 }
