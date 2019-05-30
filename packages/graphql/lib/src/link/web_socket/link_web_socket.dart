@@ -34,7 +34,7 @@ class WebSocketLink extends Link {
   // cannot be final because we're changing the instance upon a header change.
   SocketClient _socketClient;
 
-  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>(sync: true);
+  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>();
 
   Stream<FetchResult> _doOperation(Operation operation, [NextLink forward]) {
     final Map<String, dynamic> concatHeaders = <String, dynamic>{};

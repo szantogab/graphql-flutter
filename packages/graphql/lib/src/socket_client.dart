@@ -82,7 +82,7 @@ class SocketClient {
   final SocketClientConfig config;
   final Iterable<String> protocols;
   final Map<String, dynamic> headers;
-  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>(sync: true);
+  final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>();
 
   Timer _reconnectTimer;
   WebSocket _socket;
