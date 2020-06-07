@@ -1,6 +1,4 @@
-// copy/pasted from ./graphql_client_test.dart
-import 'dart:typed_data' show Uint8List;
-
+import 'package:gql/language.dart';
 import 'package:test/test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:http/http.dart' as http;
@@ -51,7 +49,7 @@ void main() {
         getToken: () async => 'Bearer my-special-bearer-token',
       );
 
-      link = authLink.concat(httpLink as Link);
+      link = authLink.concat(httpLink);
 
       graphQLClientClient = GraphQLClient(
         cache: getTestCache(),
@@ -61,7 +59,7 @@ void main() {
     group('query', () {
       test('successful query', () async {
         final WatchQueryOptions _options = WatchQueryOptions(
-          document: readRepositories,
+          documentNode: parseString(readRepositories),
           variables: <String, dynamic>{},
         );
         when(
@@ -114,9 +112,9 @@ void main() {
           },
         );
         expect(await capt.finalize().bytesToString(),
-            r'{"operationName":null,"variables":{},"query":"{\n    viewer {\n      repositories(last: 42) {\n        nodes {\n          __typename\n          id\n          name\n          viewerHasStarred\n        }\n      }\n    }\n  }\n"}');
+            r'{"operationName":null,"variables":{},"query":"query {\n  viewer {\n    repositories(last: 42) {\n      nodes {\n        __typename\n        id\n        name\n        viewerHasStarred\n      }\n    }\n  }\n}"}');
 
-        expect(r.errors, isNull);
+        expect(r.exception, isNull);
         expect(r.data, isNotNull);
         final List<Map<String, dynamic>> nodes =
             (r.data['viewer']['repositories']['nodes'] as List<dynamic>)
@@ -138,7 +136,8 @@ void main() {
     });
     group('mutation', () {
       test('successful mutation', () async {
-        final MutationOptions _options = MutationOptions(document: addStar);
+        final MutationOptions _options =
+            MutationOptions(documentNode: parseString(addStar));
         when(mockHttpClient.send(any)).thenAnswer((Invocation a) async =>
             simpleResponse(
                 body:
@@ -160,9 +159,9 @@ void main() {
           },
         );
         expect(await request.finalize().bytesToString(),
-            r'{"operationName":null,"variables":{},"query":"mutation {\n    action: addStar(input: {starrableId: \"some_repo\"}) {\n      starrable {\n        viewerHasStarred\n      }\n    }\n  }\n"}');
+            r'{"operationName":null,"variables":{},"query":"mutation {\n  action: addStar(input: {starrableId: \"some_repo\"}) {\n    starrable {\n      viewerHasStarred\n    }\n  }\n}"}');
 
-        expect(response.errors, isNull);
+        expect(response.exception, isNull);
         expect(response.data, isNotNull);
         final bool viewerHasStarred =
             response.data['action']['starrable']['viewerHasStarred'] as bool;

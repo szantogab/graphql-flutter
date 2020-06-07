@@ -1,22 +1,18 @@
 import 'dart:async';
 
-import 'package:meta/meta.dart';
-
-import 'package:graphql/src/core/query_options.dart';
-import 'package:graphql/src/core/query_result.dart';
-import 'package:graphql/src/core/graphql_error.dart';
-import 'package:graphql/src/core/observable_query.dart';
-
-import 'package:graphql/src/scheduler/scheduler.dart';
-
-import 'package:graphql/src/link/link.dart';
-import 'package:graphql/src/link/operation.dart';
-import 'package:graphql/src/link/fetch_result.dart';
-
 import 'package:graphql/src/cache/cache.dart';
 import 'package:graphql/src/cache/normalized_in_memory.dart'
     show NormalizedInMemoryCache;
 import 'package:graphql/src/cache/optimistic.dart' show OptimisticCache;
+import 'package:graphql/src/core/observable_query.dart';
+import 'package:graphql/src/core/query_options.dart';
+import 'package:graphql/src/core/query_result.dart';
+import 'package:graphql/src/exceptions/exceptions.dart';
+import 'package:graphql/src/link/fetch_result.dart';
+import 'package:graphql/src/link/link.dart';
+import 'package:graphql/src/link/operation.dart';
+import 'package:graphql/src/scheduler/scheduler.dart';
+import 'package:meta/meta.dart';
 
 class QueryManager {
   QueryManager({
@@ -36,12 +32,6 @@ class QueryManager {
   Map<String, ObservableQuery> queries = <String, ObservableQuery>{};
 
   ObservableQuery watchQuery(WatchQueryOptions options) {
-    if (options.document == null) {
-      throw Exception(
-        'document option is required. You must specify your GraphQL document in the query options.',
-      );
-    }
-
     final ObservableQuery observableQuery = ObservableQuery(
       queryManager: this,
       options: options,
@@ -57,41 +47,71 @@ class QueryManager {
   }
 
   Future<QueryResult> mutate(MutationOptions options) {
-    return fetchQuery('0', options);
+    return fetchQuery('0', options).then((result) async {
+      // not sure why query id is '0', may be needs improvements
+      // once the mutation has been process successfully, execute callbacks
+      // before returning the results
+      final mutationCallbacks = MutationCallbacks(
+        cache: cache,
+        options: options,
+        queryId: '0',
+      );
+
+      final callbacks = mutationCallbacks.callbacks;
+
+      for (final callback in callbacks) {
+        await callback(result);
+      }
+
+      return result;
+    });
   }
 
   Future<QueryResult> fetchQuery(
     String queryId,
     BaseOptions options,
   ) async {
-    // create a new operation to fetch
-    final Operation operation = Operation.fromOptions(options);
+    final MultiSourceResult allResults =
+        fetchQueryAsMultiSourceResult(queryId, options);
+    return allResults.networkResult ?? allResults.eagerResult;
+  }
 
-    if (options.optimisticResult != null) {
-      addOptimisticQueryResult(
-        queryId,
-        cacheKey: operation.toKey(),
-        optimisticResult: options.optimisticResult,
-      );
-    }
+  /// Wrap both the `eagerResult` and `networkResult` future in a `MultiSourceResult`
+  /// if the cache policy precludes a network request, `networkResult` will be `null`
+  MultiSourceResult fetchQueryAsMultiSourceResult(
+    String queryId,
+    BaseOptions options,
+  ) {
+    final QueryResult eagerResult = _resolveQueryEagerly(
+      queryId,
+      options,
+    );
+
+    // _resolveQueryEagerly handles cacheOnly,
+    // so if we're loading + cacheFirst we continue to network
+    return MultiSourceResult(
+      eagerResult: eagerResult,
+      networkResult:
+          (shouldStopAtCache(options.fetchPolicy) && !eagerResult.loading)
+              ? null
+              : _resolveQueryOnNetwork(queryId, options),
+    );
+  }
+
+  /// Resolve the query on the network,
+  /// negotiating any necessary cache edits / optimistic cleanup
+  Future<QueryResult> _resolveQueryOnNetwork(
+    String queryId,
+    BaseOptions options,
+  ) async {
+    // create a new operation to fetch
+    final Operation operation = Operation.fromOptions(options)
+      ..setContext(options.context);
 
     FetchResult fetchResult;
     QueryResult queryResult;
 
     try {
-      if (options.context != null) {
-        operation.setContext(options.context);
-      }
-      queryResult = _addEagerCacheResult(
-        queryId,
-        operation.toKey(),
-        options.fetchPolicy,
-      );
-
-      if (shouldStopAtCache(options.fetchPolicy) && queryResult != null) {
-        return queryResult;
-      }
-
       // execute the operation through the provided link(s)
       fetchResult = await execute(
         link: link,
@@ -107,27 +127,19 @@ class QueryManager {
         );
       }
 
-      if (fetchResult.data == null &&
-          fetchResult.errors == null &&
-          (options.fetchPolicy == FetchPolicy.noCache ||
-              options.fetchPolicy == FetchPolicy.networkOnly)) {
-        throw Exception(
-          'Could not resolve that operation on the network. (${options.fetchPolicy.toString()})',
-        );
-      }
-
       queryResult = mapFetchResultToQueryResult(
         fetchResult,
         options,
-        loading: false,
-        optimistic: false,
+        source: QueryResultSource.Network,
       );
-    } catch (error) {
-      queryResult ??= QueryResult(
-        loading: false,
-        optimistic: false,
+    } catch (failure) {
+      // we set the source to indicate where the source of failure
+      queryResult ??= QueryResult(source: QueryResultSource.Network);
+
+      queryResult.exception = coalesceErrors(
+        exception: queryResult.exception,
+        clientException: translateFailure(failure),
       );
-      queryResult.addError(_attemptToWrapError(error));
     }
 
     // cleanup optimistic results
@@ -143,9 +155,72 @@ class QueryManager {
     return queryResult;
   }
 
-  void refetchQuery(String queryId) {
+  /// Add an eager cache response to the stream if possible,
+  /// based on `fetchPolicy` and `optimisticResults`
+  QueryResult _resolveQueryEagerly(
+    String queryId,
+    BaseOptions options,
+  ) {
+    final String cacheKey = options.toKey();
+
+    QueryResult queryResult = QueryResult(loading: true);
+
+    try {
+      if (options.optimisticResult != null) {
+        queryResult = _getOptimisticQueryResult(
+          queryId,
+          cacheKey: cacheKey,
+          optimisticResult: options.optimisticResult,
+        );
+      }
+
+      // if we haven't already resolved results optimistically,
+      // we attempt to resolve the from the cache
+      if (shouldRespondEagerlyFromCache(options.fetchPolicy) &&
+          !queryResult.optimistic) {
+        final dynamic data = cache.read(cacheKey);
+        // we only push an eager query with data
+        if (data != null) {
+          queryResult = QueryResult(
+            data: data,
+            source: QueryResultSource.Cache,
+          );
+        }
+
+        if (options.fetchPolicy == FetchPolicy.cacheOnly &&
+            queryResult.loading) {
+          queryResult = QueryResult(
+            source: QueryResultSource.Cache,
+            exception: OperationException(
+              clientException: CacheMissException(
+                'Could not find that operation in the cache. (FetchPolicy.cacheOnly)',
+                cacheKey,
+              ),
+            ),
+          );
+        }
+      }
+    } catch (failure) {
+      queryResult.exception = coalesceErrors(
+        exception: queryResult.exception,
+        clientException: translateFailure(failure),
+      );
+    }
+
+    // If not a regular eager cache resolution,
+    // will either be loading, or optimistic.
+    //
+    // if there's an optimistic result, we add it regardless of fetchPolicy
+    // This is undefined-ish behavior/edge case, but still better than just
+    // ignoring a provided optimisticResult.
+    // Would probably be better to add it ignoring the cache in such cases
+    addQueryResult(queryId, queryResult);
+    return queryResult;
+  }
+
+  Future<QueryResult> refetchQuery(String queryId) {
     final WatchQueryOptions options = queries[queryId].options;
-    fetchQuery(queryId, options);
+    return fetchQuery(queryId, options);
   }
 
   ObservableQuery getQuery(String queryId) {
@@ -156,62 +231,27 @@ class QueryManager {
     return null;
   }
 
-  GraphQLError _attemptToWrapError(dynamic error) {
-    String errorMessage;
-
-    // not all errors thrown above are GraphQL errors,
-    // so try/catch to avoid "could not access message"
-    try {
-      errorMessage = error.message as String;
-    } catch (e) {
-      throw error;
+  /// Add a result to the query specified by `queryId`, if it exists
+  void addQueryResult(
+    String queryId,
+    QueryResult queryResult, {
+    bool writeToCache = false,
+  }) {
+    final ObservableQuery observableQuery = getQuery(queryId);
+    if (writeToCache) {
+      cache.write(
+        observableQuery.options.toKey(),
+        queryResult.data,
+      );
     }
 
-    return GraphQLError(
-      message: errorMessage,
-    );
-  }
-
-  /// Add a result to the query specified by `queryId`, if it exists
-  void addQueryResult(String queryId, QueryResult queryResult) {
-    final ObservableQuery observableQuery = getQuery(queryId);
     if (observableQuery != null && !observableQuery.controller.isClosed) {
       observableQuery.addResult(queryResult);
     }
   }
 
-  // TODO what should the relationship to optimism be here
-  // TODO we should switch to quiver Optionals
-  /// Add an eager cache response to the stream if possible based on `fetchPolicy`
-  QueryResult _addEagerCacheResult(
-      String queryId, String cacheKey, FetchPolicy fetchPolicy) {
-    if (shouldRespondEagerlyFromCache(fetchPolicy)) {
-      final dynamic cachedData = cache.read(cacheKey);
-
-      if (cachedData != null) {
-        // we're rebroadcasting from cache,
-        // so don't override optimism
-        final QueryResult queryResult = QueryResult(
-          data: cachedData,
-          loading: false,
-        );
-
-        addQueryResult(queryId, queryResult);
-
-        return queryResult;
-      }
-
-      if (fetchPolicy == FetchPolicy.cacheOnly) {
-        throw Exception(
-          'Could not find that operation in the cache. (${fetchPolicy.toString()})',
-        );
-      }
-    }
-    return null;
-  }
-
-  /// Add an optimstic result to the query specified by `queryId`, if it exists
-  void addOptimisticQueryResult(
+  /// Create an optimstic result for the query specified by `queryId`, if it exists
+  QueryResult _getOptimisticQueryResult(
     String queryId, {
     @required String cacheKey,
     @required Object optimisticResult,
@@ -224,10 +264,9 @@ class QueryManager {
 
     final QueryResult queryResult = QueryResult(
       data: cache.read(cacheKey),
-      loading: false,
-      optimistic: true,
+      source: QueryResultSource.OptimisticResult,
     );
-    addQueryResult(queryId, queryResult);
+    return queryResult;
   }
 
   /// Remove the optimistic patch for `cacheKey`, if any
@@ -250,6 +289,7 @@ class QueryManager {
             mapFetchResultToQueryResult(
               FetchResult(data: cachedData),
               query.options,
+              source: QueryResultSource.Cache,
             ),
           );
         }
@@ -279,8 +319,7 @@ class QueryManager {
   QueryResult mapFetchResultToQueryResult(
     FetchResult fetchResult,
     BaseOptions options, {
-    bool loading,
-    bool optimistic = false,
+    @required QueryResultSource source,
   }) {
     List<GraphQLError> errors;
     dynamic data;
@@ -311,9 +350,8 @@ class QueryManager {
 
     return QueryResult(
       data: data,
-      errors: errors,
-      loading: loading,
-      optimistic: optimistic,
+      source: source,
+      exception: coalesceErrors(graphqlErrors: errors),
     );
   }
 

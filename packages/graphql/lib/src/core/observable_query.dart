@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:graphql/src/exceptions/exceptions.dart';
 import 'package:meta/meta.dart';
 
 import 'package:graphql/src/core/query_manager.dart';
@@ -17,7 +18,6 @@ enum QueryLifecycle {
   SIDE_EFFECTS_PENDING,
   SIDE_EFFECTS_BLOCKING,
 
-  // right now only Mutations ever become completed
   COMPLETED,
   CLOSED
 }
@@ -27,10 +27,17 @@ class ObservableQuery {
     @required this.queryManager,
     @required this.options,
   }) : queryId = queryManager.generateQueryId().toString() {
+    if (options.eagerlyFetchResults) {
+      _latestWasEagerlyFetched = true;
+      fetchResults();
+    }
     controller = StreamController<QueryResult>.broadcast(
       onListen: onListen,
     );
   }
+
+  // set to true when eagerly fetched to prevent back-to-back queries
+  bool _latestWasEagerlyFetched = false;
 
   final String queryId;
   final QueryManager queryManager;
@@ -40,7 +47,8 @@ class ObservableQuery {
   final Set<StreamSubscription<QueryResult>> _onDataSubscriptions =
       <StreamSubscription<QueryResult>>{};
 
-  QueryResult previousResult;
+  /// The most recently seen result from this operation's stream
+  QueryResult latestResult;
 
   QueryLifecycle lifecycle = QueryLifecycle.UNEXECUTED;
 
@@ -68,13 +76,12 @@ class ObservableQuery {
     return false;
   }
 
-  /// Attempts to refetch, returning `true` if successful
-  bool refetch() {
+  /// Attempts to refetch, throwing error if not refetch safe
+  Future<QueryResult> refetch() {
     if (_isRefetchSafe) {
-      queryManager.refetchQuery(queryId);
-      return true;
+      return queryManager.refetchQuery(queryId);
     }
-    return false;
+    return Future<QueryResult>.error(Exception('Query is not refetch safe'));
   }
 
   bool get isRebroadcastSafe {
@@ -95,13 +102,26 @@ class ObservableQuery {
   }
 
   void onListen() {
+    if (_latestWasEagerlyFetched) {
+      _latestWasEagerlyFetched = false;
+
+      // eager results are resolved synchronously,
+      // so we have to add them manually now that
+      // the stream is available
+      if (!controller.isClosed && latestResult != null) {
+        controller.add(latestResult);
+      }
+      return;
+    }
     if (options.fetchResults) {
       fetchResults();
     }
   }
 
-  void fetchResults() {
-    queryManager.fetchQuery(queryId, options);
+  MultiSourceResult fetchResults() {
+    final MultiSourceResult allResults =
+        queryManager.fetchQueryAsMultiSourceResult(queryId, options);
+    latestResult ??= allResults.eagerResult;
 
     // if onData callbacks have been registered,
     // they are waited on by default
@@ -112,30 +132,94 @@ class ObservableQuery {
     if (options.pollInterval != null && options.pollInterval > 0) {
       startPolling(options.pollInterval);
     }
+
+    return allResults;
+  }
+
+  /// fetch more results and then merge them according to the updateQuery method.
+  /// the results will then be added to to stream for the widget to re-build
+  void fetchMore(FetchMoreOptions fetchMoreOptions) async {
+    // fetch more and udpate
+    assert(fetchMoreOptions.updateQuery != null);
+
+    final combinedOptions = QueryOptions(
+      fetchPolicy: FetchPolicy.noCache,
+      errorPolicy: options.errorPolicy,
+      documentNode: fetchMoreOptions.documentNode ?? options.documentNode,
+      context: options.context,
+      variables: {
+        ...options.variables,
+        ...fetchMoreOptions.variables,
+      },
+    );
+
+    // stream old results with a loading indicator
+    addResult(QueryResult(
+      data: latestResult.data,
+      loading: true,
+    ));
+
+    QueryResult fetchMoreResult = await queryManager.query(combinedOptions);
+
+    try {
+      // combine the query with the new query, using the function provided by the user
+      fetchMoreResult.data = fetchMoreOptions.updateQuery(
+        latestResult.data,
+        fetchMoreResult.data,
+      );
+      assert(fetchMoreResult.data != null, 'updateQuery result cannot be null');
+      // stream the new results and rebuild
+      queryManager.addQueryResult(
+        queryId,
+        fetchMoreResult,
+        writeToCache: true,
+      );
+    } catch (error) {
+      if (fetchMoreResult.hasException) {
+        // because the updateQuery failure might have been because of these errors,
+        // we just add them to the old errors
+        latestResult.exception = coalesceErrors(
+          exception: latestResult.exception,
+          graphqlErrors: fetchMoreResult.exception.graphqlErrors,
+          clientException: fetchMoreResult.exception.clientException,
+        );
+
+        queryManager.addQueryResult(
+          queryId,
+          latestResult,
+          writeToCache: true,
+        );
+        return;
+      } else {
+        // TODO merge results OperationException
+        rethrow;
+      }
+    }
   }
 
   /// add a result to the stream,
   /// copying `loading` and `optimistic`
-  /// from the `previousResult` if they aren't set.
+  /// from the `latestResult` if they aren't set.
   void addResult(QueryResult result) {
     // don't overwrite results due to some async/optimism issue
-    if (previousResult != null &&
-        previousResult.timestamp.isAfter(result.timestamp)) {
+    if (latestResult != null &&
+        latestResult.timestamp.isAfter(result.timestamp)) {
       return;
     }
 
-    if (previousResult != null) {
-      result.loading ??= previousResult.loading;
-      result.optimistic ??= previousResult.optimistic;
+    if (latestResult != null) {
+      result.source ??= latestResult.source;
     }
 
     if (lifecycle == QueryLifecycle.PENDING && result.optimistic != true) {
       lifecycle = QueryLifecycle.COMPLETED;
     }
 
-    previousResult = result;
+    latestResult = result;
 
-    controller.add(result);
+    if (!controller.isClosed) {
+      controller.add(result);
+    }
   }
 
   // most mutation behavior happens here
@@ -145,18 +229,16 @@ class ObservableQuery {
     callbacks ??= const <OnData>[];
     StreamSubscription<QueryResult> subscription;
 
-    subscription = stream.listen((QueryResult result) {
-      void handle(OnData callback) {
-        callback(result);
-      }
-
+    subscription = stream.listen((QueryResult result) async {
       if (!result.loading) {
-        callbacks.forEach(handle);
+        for (final callback in callbacks) {
+          await callback(result);
+        }
 
         queryManager.rebroadcastQueries();
 
         if (!result.optimistic) {
-          subscription.cancel();
+          await subscription.cancel();
           _onDataSubscriptions.remove(subscription);
 
           if (_onDataSubscriptions.isEmpty) {

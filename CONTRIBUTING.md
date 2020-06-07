@@ -69,9 +69,17 @@ Before you submit your Pull Request (PR) consider the following guidelines:
 3. Fork the `zino-app/graphql-flutter` repo.
 4. Make your changes in a new git branch:
 
+    - For fixes bug fixes:
+
    ```shell
-   git checkout -b my-fix-branch beta
+   git checkout -b my-fix-branch master
    ```
+
+    - For new features:
+    
+     ```shell
+    git checkout -b my-fix-branch beta
+    ```
 
 5. Create your patch, **including appropriate test cases**.
 6. Add and Update the documentation for your feature.
@@ -80,18 +88,19 @@ Before you submit your Pull Request (PR) consider the following guidelines:
    is necessary because release notes are automatically generated from these messages.
 
    ```shell
-   git commit -a
+   git commit -S -a
    ```
 
-   Note: the optional commit `-a` command line option will automatically "add" and "rm" edited files.
+   **Note:** the optional commit `-a` command line option will automatically "add" and "rm" edited files. While the options `-S` ensures are your commits are signed.
 
-8. Push your branch to GitHub:
+8. Make sure all of your commits are signed - follow instructions [here](https://help.github.com/en/articles/signing-commits) to learn how to sign your commits.
+9. Push your branch to GitHub:
 
-```shell
-git push origin my-fix-branch
-```
+    ```shell
+    git push origin my-fix-branch
+    ```
 
-11. In GitHub, send a pull request to `graphql-flutter:beta`.
+10. In GitHub, send a pull request to `graphql-flutter:master` for fixes and `graphql-flutter:beta` for new features.
 
 - If we suggest changes then:
 
@@ -99,7 +108,7 @@ git push origin my-fix-branch
   - Rebase your branch and force push to your GitHub repository (this will update your Pull Request):
 
     ```shell
-    git rebase beta -i
+    git rebase master -i
     git push -f
     ```
 
@@ -116,10 +125,10 @@ from the main (upstream) repository:
   git push origin --delete my-fix-branch
   ```
 
-- Check out the beta branch:
+- Check out the master branch:
 
   ```shell
-  git checkout beta -f
+  git checkout master -f
   ```
 
 - Delete the local branch:
@@ -128,10 +137,10 @@ from the main (upstream) repository:
   git branch -D my-fix-branch
   ```
 
-- Update your beta with the latest upstream version:
+- Update your master with the latest upstream version:
 
   ```shell
-  git pull --ff upstream beta
+  git pull --ff upstream master
   ```
 
 ## <a name="rules"></a> Coding Rules
@@ -204,8 +213,8 @@ The scope should be the name of the package affected (as perceived by the person
 The following is the list of supported scopes:
 
 - **client**: For GraphQL Client Package
-- **flutter**: For updates realted to Flutter GraphQL package
-- **packaging**: For pub dependancy updates
+- **flutter**: For updates related to Flutter GraphQL package
+- **packaging**: For pub dependency updates
 - **upgrade**
 - **changelog**
 

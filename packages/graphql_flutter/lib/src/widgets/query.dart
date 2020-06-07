@@ -5,11 +5,15 @@ import 'package:graphql/internal.dart';
 
 import 'package:graphql_flutter/src/widgets/graphql_provider.dart';
 
-typedef BoolCallback = bool Function();
+// method to call from widget to fetchmore queries
+typedef FetchMore = dynamic Function(FetchMoreOptions options);
+
+typedef Refetch = Future<QueryResult> Function();
 
 typedef QueryBuilder = Widget Function(
   QueryResult result, {
-  BoolCallback refetch,
+  Refetch refetch,
+  FetchMore fetchMore,
 });
 
 /// Builds a [Query] widget based on the a given set of [QueryOptions]
@@ -32,21 +36,19 @@ class QueryState extends State<Query> {
   ObservableQuery observableQuery;
 
   WatchQueryOptions get _options {
-    FetchPolicy fetchPolicy = widget.options.fetchPolicy;
-
-    if (fetchPolicy == FetchPolicy.cacheFirst) {
-      fetchPolicy = FetchPolicy.cacheAndNetwork;
-    }
+    final QueryOptions options = widget.options;
 
     return WatchQueryOptions(
-      document: widget.options.document,
-      variables: widget.options.variables,
-      fetchPolicy: fetchPolicy,
-      errorPolicy: widget.options.errorPolicy,
-      pollInterval: widget.options.pollInterval,
+      // ignore: deprecated_member_use
+      document: options.document,
+      documentNode: options.documentNode,
+      variables: options.variables,
+      fetchPolicy: options.fetchPolicy,
+      errorPolicy: options.errorPolicy,
+      pollInterval: options.pollInterval,
       fetchResults: true,
-      context: widget.options.context,
-      optimisticResult: widget.options.optimisticResult,
+      context: options.context,
+      optimisticResult: options.optimisticResult,
     );
   }
 
@@ -68,7 +70,6 @@ class QueryState extends State<Query> {
   void didUpdateWidget(Query oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // TODO @micimize - investigate why/if this was causing issues
     if (!observableQuery.options.areEqualTo(_options)) {
       _initQuery();
     }
@@ -83,9 +84,8 @@ class QueryState extends State<Query> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QueryResult>(
-      initialData: QueryResult(
-        loading: true,
-      ),
+      key: Key(observableQuery?.options?.toKey()),
+      initialData: observableQuery?.latestResult ?? QueryResult(loading: true),
       stream: observableQuery.stream,
       builder: (
         BuildContext buildContext,
@@ -94,6 +94,7 @@ class QueryState extends State<Query> {
         return widget?.builder(
           snapshot.data,
           refetch: observableQuery.refetch,
+          fetchMore: observableQuery.fetchMore,
         );
       },
     );

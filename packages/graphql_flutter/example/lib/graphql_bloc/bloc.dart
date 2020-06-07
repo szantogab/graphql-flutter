@@ -1,12 +1,11 @@
-import 'package:rxdart/subjects.dart';
+import 'package:gql/language.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
+import 'package:rxdart/subjects.dart';
 
 import '../graphql_operation/mutations/mutations.dart' as mutations;
 import '../graphql_operation/queries/readRepositories.dart' as queries;
 
-// to run the example, create a file ../local.dart with the content:
-// const String YOUR_PERSONAL_ACCESS_TOKEN =
-//    '<YOUR_PERSONAL_ACCESS_TOKEN>';
+// ignore: uri_does_not_exist
 import '../local.dart';
 
 class Repo {
@@ -23,7 +22,7 @@ class Bloc {
     _toggleStarSubject.listen((Repo t) async {
       _toggleStarLoadingSubject.add(t.id);
       // @todo handle error
-      final QueryResult _ = await _mutateToggleStar(t);
+      final _ = await _mutateToggleStar(t);
 
       _repoSubject.add(_repoSubject.value.map((Repo e) {
         if (e.id != t.id) {
@@ -59,10 +58,11 @@ class Bloc {
   );
 
   static final AuthLink _authLink = AuthLink(
+    // ignore: undefined_identifier
     getToken: () async => 'Bearer $YOUR_PERSONAL_ACCESS_TOKEN',
   );
 
-  static final Link _link = _authLink.concat(_httpLink as Link);
+  static final Link _link = _authLink.concat(_httpLink);
 
   static final GraphQLClient _client = GraphQLClient(
     cache: NormalizedInMemoryCache(
@@ -72,9 +72,9 @@ class Bloc {
   );
 
   Future<QueryResult> _mutateToggleStar(Repo repo) async {
-    final MutationOptions _options = MutationOptions(
-      document:
-          repo.viewerHasStarred ? mutations.removeStar : mutations.addStar,
+    final _options = MutationOptions(
+      documentNode:
+          gql(repo.viewerHasStarred ? mutations.removeStar : mutations.addStar),
       variables: <String, String>{
         'starrableId': repo.id,
       },
@@ -82,7 +82,7 @@ class Bloc {
 //      errorPolicy: widget.options.errorPolicy,
     );
 
-    final QueryResult result = await _client.mutate(_options);
+    final result = await _client.mutate(_options);
     return result;
   }
 
@@ -94,8 +94,8 @@ class Bloc {
 //    if (fetchPolicy == FetchPolicy.cacheFirst) {
 //      fetchPolicy = FetchPolicy.cacheAndNetwork;
 //    }
-    final WatchQueryOptions _options = WatchQueryOptions(
-      document: queries.readRepositories,
+    final _options = WatchQueryOptions(
+      documentNode: parseString(queries.readRepositories),
       variables: <String, dynamic>{
         'nRepositories': nRepositories,
       },
@@ -106,15 +106,15 @@ class Bloc {
 //      context: widget.options.context,
     );
 
-    final QueryResult result = await _client.query(_options);
+    final result = await _client.query(_options);
 
-    if (result.hasErrors) {
-      _repoSubject.addError(result.errors);
+    if (result.hasException) {
+      _repoSubject.addError(result.exception);
       return;
     }
 
     // result.data can be either a [List<dynamic>] or a [Map<String, dynamic>]
-    final List<dynamic> repositories =
+    final repositories =
         result.data['viewer']['repositories']['nodes'] as List<dynamic>;
 
     _repoSubject.add(repositories

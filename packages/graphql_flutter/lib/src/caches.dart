@@ -1,5 +1,4 @@
 import 'dart:async' show FutureOr;
-import 'dart:io' show Directory;
 
 import 'package:meta/meta.dart';
 import 'package:path_provider/path_provider.dart'
@@ -7,11 +6,13 @@ import 'package:path_provider/path_provider.dart'
 
 import 'package:graphql/client.dart' as client;
 
-FutureOr<Directory> flutterStorageProvider() =>
-    getApplicationDocumentsDirectory();
+final FutureOr<String> flutterStoragePrefix =
+    (() async => (await getApplicationDocumentsDirectory()).path)();
 
 class InMemoryCache extends client.InMemoryCache {
-  InMemoryCache() : super(storageProvider: flutterStorageProvider);
+  InMemoryCache({
+    FutureOr<String> storagePrefix,
+  }) : super(storagePrefix: storagePrefix ?? flutterStoragePrefix);
 }
 
 class NormalizedInMemoryCache extends client.NormalizedInMemoryCache {
@@ -21,7 +22,7 @@ class NormalizedInMemoryCache extends client.NormalizedInMemoryCache {
   }) : super(
           dataIdFromObject: dataIdFromObject,
           prefix: prefix,
-          storageProvider: flutterStorageProvider,
+          storagePrefix: flutterStoragePrefix,
         );
 }
 
@@ -32,6 +33,6 @@ class OptimisticCache extends client.OptimisticCache {
   }) : super(
           dataIdFromObject: dataIdFromObject,
           prefix: prefix,
-          storageProvider: flutterStorageProvider,
+          storagePrefix: flutterStoragePrefix,
         );
 }

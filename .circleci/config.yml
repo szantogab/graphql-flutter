@@ -1,14 +1,14 @@
 version: 2.1
 aliases:
   - &flutter_environment
-    - image: cirrusci/flutter:beta
+    - image: cirrusci/flutter:latest-web
   - &node_environment
     - image: circleci/node:10
   - &restore_cache
     keys:
       # when lock file changes, use increasingly general patterns to restore cache
-      - pub-packages-v1-{{ checksum "packages/graphql/pubspec.lock" }}-{{ checksum "packages/graphql_flutter/pubspec.lock" }}
-      - pub-packages-v1-{{ checksum "packages/graphql/pubspec.lock" }}
+      - pub-packages-v1-{{ checksum "packages/graphql/pubspec.yaml" }}-{{ checksum "packages/graphql_flutter/pubspec.yaml" }}
+      - pub-packages-v1-{{ checksum "packages/graphql/pubspec.yaml" }}
       - pub-packages-v1-
   - &install_yaml_processor
     name: Install yq yaml processor
@@ -67,7 +67,7 @@ jobs:
             cd packages/graphql_flutter
             flutter packages get
       - save_cache:
-          key: pub-packages-v1-{{ checksum "packages/graphql/pubspec.lock" }}-{{ checksum "packages/graphql_flutter/pubspec.lock" }}
+          key: pub-packages-v1-{{ checksum "packages/graphql/pubspec.yaml" }}-{{ checksum "packages/graphql_flutter/pubspec.yaml" }}
           paths:
             - ~/.pub-cache
   lint:
@@ -78,15 +78,17 @@ jobs:
       - run: *install_yaml_processor
       - run: *graphql_from_path
       - run:
-          name: Code linting (graphql)
+          name: Code formating and analyzing (graphql)
           command: |
             cd packages/graphql
             dartfmt **/*.dart -n --set-exit-if-changed
+            flutter analyze
       - run:
-          name: Code linting (graphql_flutter)
+          name: Code formating and analyzing (graphql_flutter)
           command: |
             cd packages/graphql_flutter
             dartfmt **/*.dart -n --set-exit-if-changed
+            flutter analyze
   coverage:
     docker: *flutter_environment
     steps:
@@ -95,28 +97,32 @@ jobs:
       - run: *install_yaml_processor
       - run: *graphql_from_path
       - run:
-          name: Code coverage (graphql)
+          name: Code coverage (graphql, vm only)
           command: |
             cd packages/graphql
             pub global activate coverage
             pub get
             pub run test_coverage
-      # - run:
-      #     name: Code coverage (graphql_flutter)
-      #     command: |
-      #       cd packages/graphql_flutter
-      #       flutter test --coverage
+            dart --enable_asserts --enable-vm-service test/.test_coverage.dart
+      - run:
+          name: Code coverage (graphql_flutter)
+          command: |
+            cd packages/graphql_flutter
+            flutter test --coverage
       - run:
           name: Upload coverage
           command: |
-            bash <(curl -s https://codecov.io/bash)
+            bash <(curl -s https://codecov.io/bash) -F graphql_flutter
+            bash <(curl -s https://codecov.io/bash) -F graphql_flutter -B `git rev-parse --abbrev-ref HEAD`_pseudo_branch_package_graphql_flutter
+            bash <(curl -s https://codecov.io/bash) -F graphql_client
+            bash <(curl -s https://codecov.io/bash) -F graphql_client -B `git rev-parse --abbrev-ref HEAD`_pseudo_branch_package_graphql_client
   release:
     docker: *node_environment
     steps:
       - checkout
       - run:
           name: Generate release tags
-          command: npx semantic-release@beta
+          command: npx -p @semantic-release/changelog -p @semantic-release/git@7.1.0-beta.11 -p semantic-release@16.0.0-beta.46 semantic-release
   sync_with_beta:
     docker: *node_environment
     steps:
@@ -145,7 +151,7 @@ jobs:
           command: |
             cd packages/graphql
 
-            VERSION=${CIRCLE_TAG%"@beta"}
+            VERSION=${CIRCLE_TAG}
             VERSION=${VERSION#"v"}
 
             # patch version
@@ -157,7 +163,7 @@ jobs:
           command: |
             cd packages/graphql_flutter
 
-            VERSION=${CIRCLE_TAG%"@beta"}
+            VERSION=${CIRCLE_TAG}
             VERSION=${VERSION#"v"}
 
             # patch version
@@ -172,11 +178,10 @@ jobs:
       - run:
           name: Bump version numbers
           command: |
-            if [[ $CIRCLE_TAG =~ ^.*@beta.*$ ]]; then BRANCH=beta; else BRANCH=master; fi 
+            if [[ $CIRCLE_TAG =~ ^.*beta.*$ ]]; then BRANCH=beta; else BRANCH=master; fi 
             git checkout $BRANCH
 
             git add packages/graphql/pubspec.yaml packages/graphql_flutter/pubspec.yaml
-            git add packages/graphql/pubspec.lock packages/graphql_flutter/pubspec.lock
             git commit --allow-empty -m "build(Pub): Bump version numbers [skip ci]"
 
             # Push quietly to prevent showing the token in log
@@ -192,6 +197,51 @@ jobs:
             cd packages/graphql_flutter
             pub publish -f
 workflows:
+  nightly:
+    triggers:
+      - schedule:
+          cron: "0 0 * * *"
+          filters:
+            branches:
+              only:
+                - beta
+    jobs:
+      - dependencies
+      - lint:
+          requires:
+            - dependencies
+      - coverage:
+          requires:
+            - dependencies
+      - release:
+          requires:
+            - dependencies
+            - lint
+            - coverage
+  weekly:
+    triggers:
+      - schedule:
+          cron: "0 21 * * 1"
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - dependencies
+      - lint:
+          requires:
+            - dependencies
+      - coverage:
+          requires:
+            - dependencies
+      - release:
+          requires:
+            - dependencies
+            - lint
+            - coverage
+      - sync_with_beta:
+          requires:
+            - release
   default:
     jobs:
       - dependencies:
@@ -210,26 +260,9 @@ workflows:
           filters:
             tags:
               ignore: /^.*$/
-      - release:
-          requires:
-            - dependencies
-            - lint
-            - coverage
-          filters:
-            branches:
-              only:
-                - master
-                - beta
-      - sync_with_beta:
-          requires:
-            - release
-          filters:
-            branches:
-              only:
-                - master
       - publish:
           requires:
-            - dependencies 
+            - dependencies
           filters:
             tags:
               only: /^.*$/

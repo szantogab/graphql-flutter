@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 String uuidFromObject(Object object) {
   if (object is Map<String, Object>) {
     final String typeName = object['__typename'] as String;
-    final String id = object['id'] as String;
+    final String id = object['id'].toString();
     if (typeName != null && id != null) {
       return <String>[typeName, id].join('/');
     }
@@ -20,7 +20,7 @@ ValueNotifier<GraphQLClient> clientFor({
   @required String uri,
   String subscriptionUri,
 }) {
-  Link link = HttpLink(uri: uri) as Link;
+  Link link = HttpLink(uri: uri);
   if (subscriptionUri != null) {
     final WebSocketLink websocketLink = WebSocketLink(
       url: subscriptionUri,

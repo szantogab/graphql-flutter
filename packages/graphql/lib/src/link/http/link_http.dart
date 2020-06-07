@@ -1,20 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:graphql/src/exceptions/exceptions.dart' as ex;
 import 'package:meta/meta.dart';
 import 'package:http/http.dart';
 import 'package:http_parser/http_parser.dart';
-import 'package:path/path.dart';
-import 'package:mime/mime.dart';
 
+import 'package:gql/language.dart';
 import 'package:graphql/src/utilities/helpers.dart' show notNull;
 import 'package:graphql/src/link/link.dart';
 import 'package:graphql/src/link/operation.dart';
 import 'package:graphql/src/link/fetch_result.dart';
 import 'package:graphql/src/link/http/fallback_http_config.dart';
 import 'package:graphql/src/link/http/http_config.dart';
+import './link_http_helper_deprecated_stub.dart'
+    if (dart.library.io) './link_http_helper_deprecated_io.dart';
 
 class HttpLink extends Link {
   HttpLink({
@@ -33,6 +34,8 @@ class HttpLink extends Link {
             Operation operation, [
             NextLink forward,
           ]) {
+            final parsedUri = Uri.parse(uri);
+
             if (operation.isSubscription) {
               if (forward == null) {
                 throw Exception('This link does not support subscriptions.');
@@ -84,7 +87,7 @@ class HttpLink extends Link {
               try {
                 // httpOptionsAndBody.body as String
                 final BaseRequest request = await _prepareRequest(
-                    uri, httpHeadersAndBody.body, httpHeaders);
+                    parsedUri, httpHeadersAndBody.body, httpHeaders);
 
                 response = await fetcher.send(request);
 
@@ -95,9 +98,14 @@ class HttpLink extends Link {
                     await _parseResponse(response);
 
                 controller.add(parsedResponse);
-              } catch (error) {
-                print(<dynamic>[error.runtimeType, error]);
-                controller.addError(error);
+              } catch (failure) {
+                // we overwrite socket uri for now:
+                // https://github.com/dart-lang/sdk/issues/12693
+                dynamic translated = ex.translateFailure(failure);
+                if (translated is ex.NetworkException) {
+                  translated.uri = parsedUri;
+                }
+                controller.addError(translated);
               }
 
               await controller.close();
@@ -110,16 +118,16 @@ class HttpLink extends Link {
         );
 }
 
-Map<String, File> _getFileMap(
+Future<Map<String, MultipartFile>> _getFileMap(
   dynamic body, {
-  Map<String, File> currentMap,
+  Map<String, MultipartFile> currentMap,
   List<String> currentPath = const <String>[],
-}) {
-  currentMap ??= <String, File>{};
+}) async {
+  currentMap ??= <String, MultipartFile>{};
   if (body is Map<String, dynamic>) {
     final Iterable<MapEntry<String, dynamic>> entries = body.entries;
     for (MapEntry<String, dynamic> element in entries) {
-      currentMap.addAll(_getFileMap(
+      currentMap.addAll(await _getFileMap(
         element.value,
         currentMap: currentMap,
         currentPath: List<String>.from(currentPath)..add(element.key),
@@ -129,7 +137,7 @@ Map<String, File> _getFileMap(
   }
   if (body is List<dynamic>) {
     for (int i = 0; i < body.length; i++) {
-      currentMap.addAll(_getFileMap(
+      currentMap.addAll(await _getFileMap(
         body[i],
         currentMap: currentMap,
         currentPath: List<String>.from(currentPath)..add(i.toString()),
@@ -137,30 +145,45 @@ Map<String, File> _getFileMap(
     }
     return currentMap;
   }
-  if (body is File) {
-    return currentMap..addAll(<String, File>{currentPath.join('.'): body});
+  if (body is MultipartFile) {
+    return currentMap
+      ..addAll(<String, MultipartFile>{currentPath.join('.'): body});
   }
+
+  // @deprecated, backward compatible only
+  // in case the body is io.File
+  // in future release, io.File will no longer be supported
+  if (isIoFile(body)) {
+    return deprecatedHelper(body, currentMap, currentPath);
+  }
+
   // else should only be either String, num, null; NOTHING else
   return currentMap;
 }
 
 Future<BaseRequest> _prepareRequest(
-  String url,
+  Uri uri,
   Map<String, dynamic> body,
   Map<String, String> httpHeaders,
 ) async {
-  final Map<String, File> fileMap = _getFileMap(body);
+  final Map<String, MultipartFile> fileMap = await _getFileMap(body);
   if (fileMap.isEmpty) {
-    final Request r = Request('post', Uri.parse(url));
+    final Request r = Request('post', uri);
     r.headers.addAll(httpHeaders);
     r.body = json.encode(body);
     return r;
   }
 
-  final MultipartRequest r = MultipartRequest('post', Uri.parse(url));
+  final MultipartRequest r = MultipartRequest('post', uri);
   r.headers.addAll(httpHeaders);
   r.fields['operations'] = json.encode(body, toEncodable: (dynamic object) {
-    if (object is File) {
+    if (object is MultipartFile) {
+      return null;
+    }
+    // @deprecated, backward compatible only
+    // in case the body is io.File
+    // in future release, io.File will no longer be supported
+    if (isIoFile(object)) {
       return null;
     }
     return object.toJson();
@@ -169,23 +192,22 @@ Future<BaseRequest> _prepareRequest(
   final Map<String, List<String>> fileMapping = <String, List<String>>{};
   final List<MultipartFile> fileList = <MultipartFile>[];
 
-  final List<MapEntry<String, File>> fileMapEntries =
+  final List<MapEntry<String, MultipartFile>> fileMapEntries =
       fileMap.entries.toList(growable: false);
 
   for (int i = 0; i < fileMapEntries.length; i++) {
-    final MapEntry<String, File> entry = fileMapEntries[i];
+    final MapEntry<String, MultipartFile> entry = fileMapEntries[i];
     final String indexString = i.toString();
     fileMapping.addAll(<String, List<String>>{
       indexString: <String>[entry.key],
     });
-    final File f = entry.value;
-    final String fileName = basename(f.path);
+    final MultipartFile f = entry.value;
     fileList.add(MultipartFile(
       indexString,
-      f.openRead(),
-      await f.length(),
-      contentType: MediaType.parse(lookupMimeType(fileName)),
-      filename: fileName,
+      f.finalize(),
+      f.length,
+      contentType: f.contentType,
+      filename: f.filename,
     ));
   }
 
@@ -279,7 +301,7 @@ HttpHeadersAndBody _selectHttpOptionsAndBody(
   }
 
   if (http.includeQuery) {
-    body['query'] = operation.document;
+    body['query'] = printNode(operation.documentNode);
   }
 
   return HttpHeadersAndBody(

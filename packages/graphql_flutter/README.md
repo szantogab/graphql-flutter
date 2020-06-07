@@ -1,16 +1,18 @@
-# GraphQL Flutter 
+[![MIT License][license-badge]][license-link]
+[![All Contributors](https://img.shields.io/badge/all_contributors-31-orange.svg?style=flat-square)](#contributors)
+[![PRs Welcome][prs-badge]][prs-link]
+
+[![Star on GitHub][github-star-badge]][github-star-link]
+[![Watch on GitHub][github-watch-badge]][github-watch-link]
+[![Discord][discord-badge]][discord-link]
 
 [![Build Status][build-status-badge]][build-status-link]
 [![Coverage][coverage-badge]][coverage-link]
 [![version][version-badge]][package-link]
-[![MIT License][license-badge]][license-link]
-[![All Contributors](https://img.shields.io/badge/all_contributors-15-orange.svg)](#contributors)
-[![PRs Welcome][prs-badge]](http://makeapullrequest.com)
 
-[![Watch on GitHub](https://img.shields.io/github/watchers/zino-app/graphql-flutter.svg?style=flat&logo=github&colorB=deeppink&label=Watchers)](https://github.com/felangel/bloc)
-[![Star on GitHub](https://img.shields.io/github/stars/zino-app/graphql-flutter.svg?style=flat&logo=github&colorB=deeppink&label=Stars)](https://github.com/felangel/bloc)
+# GraphQL Flutter
 
-## Table of Contents 
+## Table of Contents
 
 - [Installation](#installation)
 - [Usage](#usage)
@@ -19,11 +21,13 @@
     - [Normalization](#normalization)
     - [Optimism](#optimism)
   - [Queries](#queries)
+    - [Fetch More (Pagination)](#fetch-more-pagination)
   - [Mutations](#mutations)
     - [Mutations with optimism](#mutations-with-optimism)
+  - [Exceptions](#exceptions)
   - [Subscriptions (Experimental)](#subscriptions-experimental)
   - [GraphQL Consumer](#graphql-consumer)
-  - [Graphql Upload](#graphql-upload)
+  - [GraphQL Upload](#graphql-upload)
 - [Roadmap](#roadmap)
 
 ## Installation
@@ -32,7 +36,7 @@ First, depends on the library by adding this to your packages `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  graphql_flutter: ^1.0.0
+  graphql_flutter: ^3.0.0
 ```
 
 Now inside your Dart code, you can import it.
@@ -40,6 +44,10 @@ Now inside your Dart code, you can import it.
 ```dart
 import 'package:graphql_flutter/graphql_flutter.dart';
 ```
+
+## Migration Guide
+
+Find the migration from version 2 to version 3 [here](./../../changelog-v2-v3.md).
 
 ## Usage
 
@@ -63,7 +71,7 @@ void main() {
     // getToken: () => 'Bearer <YOUR_PERSONAL_ACCESS_TOKEN>',
   );
 
-  final Link link = authLink.concat(httpLink as Link);
+  final Link link = authLink.concat(httpLink);
 
   ValueNotifier<GraphQLClient> client = ValueNotifier(
     GraphQLClient(
@@ -98,6 +106,32 @@ In order to use the client, you `Query` and `Mutation` widgets to be wrapped wit
   ...
 ```
 
+### AWS AppSync Support
+
+#### Cognito Pools
+
+To use with an AppSync GraphQL API that is authorized with AWS Cognito User Pools, simply pass the JWT token for your Cognito user session in to the `AuthLink`:
+
+```dart
+// Where `session` is a CognitorUserSession
+// from amazon_cognito_identity_dart_2
+final token = session.getAccessToken().getJwtToken();
+
+final AuthLink authLink = AuthLink(
+  getToken: () => token,
+);
+```
+
+See more: [Issue #209](https://github.com/zino-app/graphql-flutter/issues/209)
+
+#### Other Authorization Types
+
+API key, IAM, and Federated provider authorization could be accomplished through custom links, but it is not known to be supported. Anyone wanting to implement this can reference AWS' JS SDK `AuthLink` implementation.
+
+- Making a custom link: [Comment on Issue 173](https://github.com/zino-app/graphql-flutter/issues/173#issuecomment-464435942)
+- AWS JS SDK `auth-link.ts`: [aws-mobile-appsync-sdk-js:auth-link.ts](https://github.com/awslabs/aws-mobile-appsync-sdk-js/blob/master/packages/aws-appsync-auth-link/src/auth-link.ts)
+
+
 ### Offline Cache
 
 The in-memory cache can automatically be saved to and restored from offline storage. Setting it up is as easy as wrapping your app with the `CacheProvider` widget.
@@ -127,7 +161,7 @@ class MyApp extends StatelessWidget {
 
 #### Normalization
 
-To enable [apollo-like normalization](https://www.apollographql.com/docs/react/advanced/caching.html#normalization), use a `NormalizedInMemoryCache` or `OptimisticCache`:
+To enable [apollo-like normalization](https://www.apollographql.com/docs/react/caching/cache-configuration/#data-normalization), use a `NormalizedInMemoryCache` or `OptimisticCache`:
 
 ```dart
 ValueNotifier<GraphQLClient> client = ValueNotifier(
@@ -191,16 +225,17 @@ In your widget:
 // ...
 Query(
   options: QueryOptions(
-    document: readRepositories, // this is the query string you just created
+    documentNode: gql(readRepositories), // this is the query string you just created
     variables: {
       'nRepositories': 50,
     },
     pollInterval: 10,
   ),
   // Just like in apollo refetch() could be used to manually trigger a refetch
-  builder: (QueryResult result, { VoidCallback refetch }) {
-    if (result.errors != null) {
-      return Text(result.errors.toString());
+  // while fetchMore() can be used for pagination purpose
+  builder: (QueryResult result, { VoidCallback refetch, FetchMore fetchMore }) {
+    if (result.hasException) {
+        return Text(result.exception.toString());
     }
 
     if (result.loading) {
@@ -220,6 +255,56 @@ Query(
   },
 );
 // ...
+```
+
+#### Fetch More (Pagination)
+
+You can use `fetchMore()` function inside `Query` Builder to perform pagination. The `fetchMore()` function allows you to run an entirely new GraphQL operation and merge the new results with the original results. On top of that, you can re-use aspects of the Original query i.e. the Query or some of the Variables.
+
+In order to use the `FetchMore()` function, you will need to first define `FetchMoreOptions` variable for the new query.
+
+```dart
+...
+// this is returned by the GitHubs GraphQL API for pagination purpose
+final Map pageInfo = result.data['search']['pageInfo'];
+final String fetchMoreCursor = pageInfo['endCursor'];
+
+FetchMoreOptions opts = FetchMoreOptions(
+  variables: {'cursor': fetchMoreCursor},
+  updateQuery: (previousResultData, fetchMoreResultData) {
+    // this function will be called so as to combine both the original and fetchMore results
+    // it allows you to combine them as you would like
+    final List<dynamic> repos = [
+      ...previousResultData['search']['nodes'] as List<dynamic>,
+      ...fetchMoreResultData['search']['nodes'] as List<dynamic>
+    ];
+
+    // to avoid a lot of work, lets just update the list of repos in returned
+    // data with new data, this also ensures we have the endCursor already set
+    // correctly
+    fetchMoreResultData['search']['nodes'] = repos;
+
+    return fetchMoreResultData;
+  },
+);
+
+...
+```
+
+And then, call the `fetchMore()` function and pass the `FetchMoreOptions` variable you defined above.
+
+```dart
+RaisedButton(
+  child: Row(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: <Widget>[
+      Text("Load More"),
+    ],
+  ),
+  onPressed: () {
+    fetchMore(opts);
+  },
+)
 ```
 
 ### Mutations
@@ -245,7 +330,15 @@ The syntax for mutations is fairly similar to that of a query. The only differen
 
 Mutation(
   options: MutationOptions(
-    document: addStar, // this is the mutation string you just created
+    documentNode: gql(addStar), // this is the mutation string you just created
+    // you can update the cache based on results
+    update: (Cache cache, QueryResult result) {
+      return cache;
+    },
+    // or do something with the result.data on completion
+    onCompleted: (dynamic resultData) {
+      print(resultData);
+    },
   ),
   builder: (
     RunMutation runMutation,
@@ -258,14 +351,6 @@ Mutation(
       tooltip: 'Star',
       child: Icon(Icons.star),
     );
-  },
-  // you can update the cache based on results
-  update: (Cache cache, QueryResult result) {
-    return cache;
-  },
-  // or do something with the result.data on completion
-  onCompleted: (dynamic resultData) {
-    print(resultData);
   },
 );
 
@@ -300,7 +385,41 @@ With a bit more context (taken from **[the complete mutation example `StarrableR
 // bool get optimistic => (repository as LazyCacheMap).isOptimistic;
 Mutation(
   options: MutationOptions(
-    document: starred ? mutations.removeStar : mutations.addStar,
+    documentNode: gql(starred ? mutations.removeStar : mutations.addStar),
+    // will be called for both optimistic and final results
+    update: (Cache cache, QueryResult result) {
+      if (result.hasException) {
+        print(['optimistic', result.exception.toString()]);
+      } else {
+        final Map<String, Object> updated =
+            Map<String, Object>.from(repository)
+              ..addAll(extractRepositoryData(result.data));
+        cache.write(typenameDataIdFromObject(updated), updated);
+      }
+    },
+    // will only be called for final result
+    onCompleted: (dynamic resultData) {
+      showDialog<AlertDialog>(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text(
+              extractRepositoryData(resultData)['viewerHasStarred'] as bool
+                  ? 'Thanks for your star!'
+                  : 'Sorry you changed your mind!',
+            ),
+            actions: <Widget>[
+              SimpleDialogOption(
+                child: const Text('Dismiss'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+              )
+            ],
+          );
+        },
+      );
+    },
   ),
   builder: (RunMutation toggleStar, QueryResult result) {
     return ListTile(
@@ -326,41 +445,32 @@ Mutation(
       },
     );
   },
-  // will be called for both optimistic and final results
-  update: (Cache cache, QueryResult result) {
-    if (result.hasErrors) {
-      print(['optimistic', result.errors]);
-    } else {
-      final Map<String, Object> updated =
-          Map<String, Object>.from(repository)
-            ..addAll(extractRepositoryData(result.data));
-      cache.write(typenameDataIdFromObject(updated), updated);
-    }
-  },
-  // will only be called for final result
-  onCompleted: (dynamic resultData) {
-    showDialog<AlertDialog>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(
-            extractRepositoryData(resultData)['viewerHasStarred'] as bool
-                ? 'Thanks for your star!'
-                : 'Sorry you changed your mind!',
-          ),
-          actions: <Widget>[
-            SimpleDialogOption(
-              child: const Text('Dismiss'),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            )
-          ],
-        );
-      },
-    );
-  },
 );
+```
+
+### Exceptions
+
+If there were problems encountered during a query or mutation, the `QueryResult` will have an `OperationException` in the `exception` field:
+
+```dart
+class OperationException implements Exception {
+  /// Any graphql errors returned from the operation
+  List<GraphQLError> graphqlErrors = [];
+
+  /// Errors encountered during execution such as network or cache errors
+  ClientException clientException;
+}
+```
+
+Example usage:
+
+```dart
+if (result.hasException) {
+    if (result.exception.clientException is NetworkException) {
+        // handle network issues, maybe
+    }
+    return Text(result.exception.toString())
+}
 ```
 
 ### Subscriptions (Experimental)
@@ -441,16 +551,18 @@ mutation($files: [Upload!]!) {
 ```
 
 ```dart
-import 'dart:io' show File;
+import 'package:http/http.dart';
 
 // ...
 
 String filePath = '/aboslute/path/to/file.ext';
+final file = await multipartFileFrom(File(filePath));
+
 final QueryResult r = await graphQLClientClient.mutate(
   MutationOptions(
-    document: uploadMutation,
+    documentNode: gql(uploadMutation),
     variables: {
-      'files': [File(filePath)],
+      'files': [file],
     },
   )
 );
@@ -462,28 +574,30 @@ This is currently our roadmap, please feel free to request additions/changes.
 
 | Feature                 | Progress |
 | :---------------------- | :------: |
-| Queries                 |    ✅    |
-| Mutations               |    ✅    |
-| Subscriptions           |    ✅    |
-| Query polling           |    ✅    |
-| In memory cache         |    ✅    |
-| Offline cache sync      |    ✅    |
-| GraphQL pload           |    ✅    |
-| Optimistic results      |    ✅    |
+| Queries                 |    ✅     |
+| Mutations               |    ✅     |
+| Subscriptions           |    ✅     |
+| Query polling           |    ✅     |
+| In memory cache         |    ✅     |
+| Offline cache sync      |    ✅     |
+| GraphQL pload           |    ✅     |
+| Optimistic results      |    ✅     |
 | Client state management |    🔜    |
 | Modularity              |    🔜    |
 
-[build-status-badge]: https://api.cirrus-ci.com/github/truongsinh/graphql-flutter.svg
-[build-status-link]: https://cirrus-ci.com/github/truongsinh/dart-uuid/master
-[coverage-badge]: https://codecov.io/gh/truongsinh/graphql-flutter/branch/master/graph/badge.svg
-[coverage-link]: https://codecov.io/gh/truongsinh/graphql-flutter
-[version-badge]: https://img.shields.io/pub/v/graphql_flutter.svg
+[build-status-badge]: https://img.shields.io/circleci/build/github/zino-app/graphql-flutter.svg?style=flat-square
+[build-status-link]: https://circleci.com/gh/zino-app/graphql-flutter
+[coverage-badge]: https://img.shields.io/codecov/c/github/zino-app/graphql-flutter.svg?style=flat-square
+[coverage-link]: https://codecov.io/gh/zino-app/graphql-flutter
+[version-badge]: https://img.shields.io/pub/v/graphql_flutter.svg?style=flat-square
 [package-link]: https://pub.dartlang.org/packages/graphql_flutter
-[license-badge]: https://img.shields.io/github/license/zino-app/graphql-flutter.svg
+[license-badge]: https://img.shields.io/github/license/zino-app/graphql-flutter.svg?style=flat-square
 [license-link]: https://github.com/zino-app/graphql-flutter/blob/master/LICENSE
-[prs-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg
-[prs]: http://makeapullrequest.com
-[github-watch-badge]: https://img.shields.io/github/watchers/zino-app/graphql-flutter.svg?style=social
-[github-watch]: https://github.com/zino-app/graphql-flutter/watchers
-[github-star-badge]: https://img.shields.io/github/stars/zino-app/graphql-flutter.svg?style=social
-[github-star]: https://github.com/zino-app/graphql-flutter/stargazers
+[prs-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square
+[prs-link]: http://makeapullrequest.com
+[github-watch-badge]: https://img.shields.io/github/watchers/zino-app/graphql-flutter.svg?style=flat-square&logo=github&logoColor=ffffff
+[github-watch-link]: https://github.com/zino-app/graphql-flutter/watchers
+[github-star-badge]: https://img.shields.io/github/stars/zino-app/graphql-flutter.svg?style=flat-square&logo=github&logoColor=ffffff
+[github-star-link]: https://github.com/zino-app/graphql-flutter/stargazers
+[discord-badge]: https://img.shields.io/discord/559455668810153989.svg?style=flat-square&logo=discord&logoColor=ffffff
+[discord-link]: https://discord.gg/tXTtBfC
