@@ -16,6 +16,7 @@ class WebSocketLink extends Link {
   /// Creates a new [WebSocketLink] instance with the specified config.
   WebSocketLink({
     @required this.url,
+    this.headers,
     this.config = const SocketClientConfig(),
   }) : super() {
     request = _doOperation;
@@ -23,12 +24,20 @@ class WebSocketLink extends Link {
 
   final String url;
   final SocketClientConfig config;
+  final Map<String, dynamic> headers;
   final BehaviorSubject<SocketConnectionState> _connectionStateController = BehaviorSubject<SocketConnectionState>();
 
   // cannot be final because we're changing the instance upon a header change.
   SocketClient _socketClient;
 
   Stream<FetchResult> _doOperation(Operation operation, [NextLink forward]) {
+    final Map<String, dynamic> concatHeaders = <String, dynamic>{};
+    final Map<String, dynamic> context = operation.getContext();
+    if (context != null && context.containsKey('headers')) concatHeaders.addAll(context['headers'] as Map<String, dynamic>);
+    if (headers != null) {
+      concatHeaders.addAll(headers);
+    }
+
     if (_socketClient == null) {
       connectOrReconnect();
     }
@@ -39,9 +48,9 @@ class WebSocketLink extends Link {
   }
 
   /// Connects or reconnects to the server with the specified headers.
-  void connectOrReconnect() {
+  void connectOrReconnect({Map<String, dynamic> headers}) async {
     _socketClient?.dispose();
-    _socketClient = SocketClient(url, config: config);
+    _socketClient = SocketClient(url, headers: headers ?? this.headers, config: config);
     _connectionStateController.addStream(_socketClient.connectionState);
   }
 
